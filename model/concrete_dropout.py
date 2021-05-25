@@ -62,7 +62,7 @@ class ConcreteDropout(nn.Module):
         return x
         
 class Model(nn.Module):
-    def __init__(self, input_size, nb_features, weight_regularizer, dropout_regularizer):
+    def __init__(self, input_size, nb_features, weight_regularizer, dropout_regularizer, tanh):
         super(Model, self).__init__()
         self.linear1 = nn.Linear(input_size, nb_features)
         self.linear2 = nn.Linear(nb_features, nb_features)
@@ -83,6 +83,7 @@ class Model(nn.Module):
                                                  dropout_regularizer=dropout_regularizer)
         
         self.relu = nn.ReLU()
+        self.tanh = tanh
         
     def forward(self, x):
         regularization = torch.empty(5, device=x.device)
@@ -93,6 +94,9 @@ class Model(nn.Module):
 
         mean, regularization[3] = self.conc_drop_mu(x3, self.linear4_mu)
         log_var, regularization[4] = self.conc_drop_logvar(x3, self.linear4_logvar)
+        
+        if self.tanh:
+            mean = (torch.tanh(mean) + 1.0) / 2.0
 
         return mean, log_var, regularization.sum()
 
@@ -100,11 +104,11 @@ def heteroscedastic_loss(true, mean, log_var):
     precision = torch.exp(-log_var)
     return torch.mean(torch.sum(precision * (true - mean)**2 + log_var, 1), 0)
     
-def train_model(X, Y, n_epoch = 1000, n_features = 20, batch_size = 50, learning_rate = 1e-3, l = 1e-4):
+def train_model(X, Y, n_epoch = 1000, n_features = 20, batch_size = 50, learning_rate = 1e-3, l = 1e-4, tanh = False):
     N, input_size = X.shape
     wr = l**2. / N
     dr = 2. / N
-    model = Model(input_size, n_features, wr, dr)
+    model = Model(input_size, n_features, wr, dr, tanh)
     optimizer = optim.Adam(model.parameters(), lr = learning_rate)
     
     for i in range(n_epoch):

@@ -59,9 +59,10 @@ class GaussianMLP(MLP):
 
     """
 
-    def __init__(self, inputs=1, outputs=1, hidden_layers=[100], activation='relu'):
+    def __init__(self, inputs=1, outputs=1, hidden_layers=[100], activation='relu', tanh=False):
         super(GaussianMLP, self).__init__(inputs=inputs, outputs=2*outputs, hidden_layers=hidden_layers, activation=activation)
         self.outputs = outputs
+        self.tanh = tanh
     def forward(self, x):
         # connect layers
         for i in range(self.nLayers):
@@ -71,6 +72,8 @@ class GaussianMLP(MLP):
         x = layer(x)
         mean, variance = torch.split(x, self.outputs, dim=1)
         variance = torch.log(1 + torch.exp(variance))
+        if self.tanh:
+            mean = (torch.tanh(mean) + 1.0) / 2.0
         return mean, variance
 
 
@@ -84,18 +87,20 @@ class GaussianMixtureMLP(nn.Module):
         hidden_layers (list of ints): hidden layer sizes
 
     """
-    def __init__(self, num_models=5, inputs=1, outputs=1, hidden_layers=[100], activation='relu'):
+    def __init__(self, num_models=5, inputs=1, outputs=1, hidden_layers=[100], activation='relu', tanh=False):
         super(GaussianMixtureMLP, self).__init__()
         self.num_models = num_models
         self.inputs = inputs
         self.outputs = outputs
         self.hidden_layers = hidden_layers
         self.activation = activation
+        self.tanh = tanh
         for i in range(self.num_models):
             model = GaussianMLP(inputs=self.inputs, 
                                 outputs=self.outputs, 
                                 hidden_layers=self.hidden_layers,
-                                activation=self.activation)
+                                activation=self.activation,
+                                tanh=self.tanh)
             setattr(self, 'model_'+str(i), model)
             
     def forward(self, x):
@@ -118,9 +123,9 @@ def NLLloss(y, mean, var):
     return (torch.log(var) + torch.pow(y - mean, 2)/var).mean()
 
 
-def train_model(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20, 20], learning_rate = 0.003):
+def train_model(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20, 20], learning_rate = 0.003, tanh = False):
     N, input_size = X.shape
-    gmm = GaussianMixtureMLP(num_models=num_models, inputs = input_size, hidden_layers=hidden_layers)
+    gmm = GaussianMixtureMLP(num_models=num_models, inputs = input_size, hidden_layers=hidden_layers, tanh = tanh)
 
     for i in range(gmm.num_models):
         model = getattr(gmm, 'model_' + str(i))

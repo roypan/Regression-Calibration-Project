@@ -3,8 +3,12 @@ from scipy.stats import norm
 import matplotlib.pyplot as plt
 
 def mape(val_true, val_pred):
-    return np.mean(np.abs((val_pred - val_true) / val_true))
-    
+    ind = (np.abs(val_true) > 1e-5)
+    return np.mean(np.abs((val_pred[ind] - val_true[ind]) / val_true[ind]))
+
+def rmse(val_true, val_pred):
+    return np.sqrt(np.mean((val_pred - val_true) ** 2))
+
 def pcdf(mean_pred, var_pred, val):
     n = len(mean_pred)
     pcdf = np.zeros(n)
