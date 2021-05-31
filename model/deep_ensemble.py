@@ -123,13 +123,14 @@ def NLLloss(y, mean, var):
     return (torch.log(var) + torch.pow(y - mean, 2)/var).mean()
 
 
-def train_model(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20, 20], learning_rate = 0.003, tanh = False):
+def train_model(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20, 20], learning_rate = 0.003, tanh = False, exp_decay = 1, decay_stepsize = 1):
     N, input_size = X.shape
     gmm = GaussianMixtureMLP(num_models=num_models, inputs = input_size, hidden_layers=hidden_layers, tanh = tanh)
 
     for i in range(gmm.num_models):
         model = getattr(gmm, 'model_' + str(i))
         gmlp_optimizer = torch.optim.RMSprop(params=model.parameters(), lr=learning_rate)
+        scheduler = torch.optim.lr_scheduler.StepLR(gmlp_optimizer, step_size=decay_stepsize, gamma=exp_decay)
         
         for epoch in range(n_epoch):
             gmlp_optimizer.zero_grad()
@@ -139,6 +140,7 @@ def train_model(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20, 20], 
                 print('initial loss: ',gmlp_loss.item())
             gmlp_loss.backward()
             gmlp_optimizer.step()
+            scheduler.step()
         print('final loss: ',gmlp_loss.item())
     
     return gmm
