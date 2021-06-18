@@ -194,3 +194,48 @@ def train_model(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20, 20], 
     print('final loss: ', nllk_loss.item())
     
     return gmm
+    
+def train_model_nllk(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20, 20], learning_rate = 0.003, tanh = False, calibration_threshold = .05, exp_decay = 1, decay_stepsize = 1):
+    N, input_size = X.shape
+    gmm = GaussianMLP(inputs = input_size, hidden_layers=hidden_layers, tanh = tanh)
+
+    optimizer = torch.optim.RMSprop(params=gmm.parameters(), lr=learning_rate)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=decay_stepsize, gamma=exp_decay)
+    
+    # in the first half of the training epochs, train the model without the calibration loss
+    for epoch in range(n_epoch):
+        optimizer.zero_grad()
+        mean, var = gmm(X)
+        nllk_loss = NLLloss(Y, mean, var) #NLL loss
+        if epoch == 0:
+            print('initial loss: ',nllk_loss.item())
+        nllk_loss.backward()
+        optimizer.step()
+        scheduler.step()
+        
+    print('final loss: ', nllk_loss.item())
+    
+    return gmm
+
+def train_model_crps(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20, 20], learning_rate = 0.003, tanh = False, calibration_threshold = .05, exp_decay = 1, decay_stepsize = 1):
+    N, input_size = X.shape
+    gmm = GaussianMLP(inputs = input_size, hidden_layers=hidden_layers, tanh = tanh)
+
+    optimizer = torch.optim.RMSprop(params=gmm.parameters(), lr=learning_rate)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=decay_stepsize, gamma=exp_decay)
+    
+    # in the first half of the training epochs, train the model without the calibration loss
+    for epoch in range(n_epoch):
+        optimizer.zero_grad()
+        mean, var = gmm(X)
+        sd = torch.sqrt(var)
+        crps_loss = CRPSMetric(x = Y.squeeze(dim = 1), loc = mean.squeeze(dim = 1), scale = sd.squeeze(dim = 1)).gaussian_crps().mean()
+        if epoch == 0:
+            print('initial loss: ',crps_loss.item())
+        crps_loss.backward()
+        optimizer.step()
+        scheduler.step()
+        
+    print('final loss: ', crps_loss.item())
+    
+    return gmm
