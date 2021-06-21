@@ -152,7 +152,25 @@ def calibration_error(pcdf, step = 0.1):
     for i in range(len(p)):
         cumulative_pcdf[i] = np.mean(pcdf <= p[i])
     return np.sum((cumulative_pcdf - p) ** 2)
-
+    
+def calibration_loss(y, p, mean_pred, var_pred):
+    """
+    a tensor of randomly chosen quantiles
+    """
+    loss = 0
+    m = len(p)
+    n = len(y)
+    for i in range(m):
+        pq = torch.zeros(n)
+        for j in range(n):
+            pq[j] = torch.distributions.normal.Normal(loc = mean_pred[j], scale = torch.sqrt(var_pred[j])).icdf(p[i])
+        average_coverage = torch.mean((y <= pq).float())
+        if average_coverage < p[i]:
+            loss += 1/m * torch.mean((y - pq) * (y > pq))
+        else:
+            loss += 1/m * torch.mean((pq - y) * (y < pq))
+    return loss
+    
 def train_model(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20, 20], learning_rate = 0.003, tanh = False, calibration_threshold = .05, exp_decay = 1, decay_stepsize = 1):
     N, input_size = X.shape
     gmm = GaussianMLP(inputs = input_size, hidden_layers=hidden_layers, tanh = tanh)
@@ -176,7 +194,7 @@ def train_model(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20, 20], 
         optimizer.zero_grad()
         mean, var = gmm(X)
         nllk_loss = NLLloss(Y, mean, var) #NLL loss
-        predicted_cdf = pcdf(mean, var, Y)
+        predicted_cdf = pcdf(mean.squeeze(dim = 1), var.squeeze(dim = 1), Y)
         sd = torch.sqrt(var)
         
         cal_err = calibration_error(predicted_cdf.detach().numpy(), step = .1)
@@ -237,5 +255,32 @@ def train_model_crps(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20, 
         scheduler.step()
         
     print('final loss: ', crps_loss.item())
+    
+    return gmm
+
+def train_model_calibration(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20, 20], learning_rate = 0.003, tanh = False, calibration_threshold = .05, exp_decay = 1, decay_stepsize = 1):
+    N, input_size = X.shape
+    gmm = GaussianMLP(inputs = input_size, hidden_layers=hidden_layers, tanh = tanh)
+
+    optimizer = torch.optim.RMSprop(params=gmm.parameters(), lr=learning_rate)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=decay_stepsize, gamma=exp_decay)
+    
+    # in the first half of the training epochs, train the model without the calibration loss
+    for epoch in range(n_epoch):
+        optimizer.zero_grad()
+        mean, var = gmm(X)
+        nllk_loss = NLLloss(Y, mean, var) #NLL loss
+        predicted_cdf = pcdf(mean.squeeze(dim = 1), var.squeeze(dim = 1), Y)
+        p = torch.FloatTensor(10).uniform_(0, 1)
+        cal_loss = calibration_loss(Y.squeeze(dim = 1), p, mean.squeeze(dim = 1), var.squeeze(dim = 1))
+        loss = 40 * cal_loss + nllk_loss
+        if epoch == 0:
+            print('initial loss: ',loss.item())
+        print('cal loss: ', cal_loss.item(), 'cal error:', calibration_error(predicted_cdf.detach().numpy()), 'nllk loss: ', nllk_loss)
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+        
+    print('final loss: ', loss.item())
     
     return gmm
