@@ -3,6 +3,7 @@ import torch.nn as nn
 import numpy as np
 import pandas as pd
 import math
+import random
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from torch import optim
@@ -68,13 +69,14 @@ class GaussianMLP(MLP):
         for i in range(self.nLayers):
             layer = getattr(self, 'layer_'+str(i))
             x = self.act(layer(x))
+        feature = x
         layer = getattr(self, 'layer_' + str(self.nLayers))
         x = layer(x)
         mean, variance = torch.split(x, self.outputs, dim=1)
         variance = torch.log(1 + torch.exp(variance))
         if self.tanh:
             mean = (torch.tanh(mean) + 1.0) / 2.0
-        return mean, variance
+        return mean, variance, feature
 
 class CRPSMetric:
     """
@@ -154,9 +156,6 @@ def calibration_error(pcdf, step = 0.1):
     return np.sum((cumulative_pcdf - p) ** 2)
     
 def calibration_loss(y, p, mean_pred, var_pred):
-    """
-    a tensor of randomly chosen quantiles
-    """
     loss = 0
     m = len(p)
     n = len(y)
@@ -171,112 +170,38 @@ def calibration_loss(y, p, mean_pred, var_pred):
             loss += 1/m * torch.mean((pq - y) ** 2 * (y < pq))
     return loss
     
-def train_model(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20, 20], learning_rate = 0.003, tanh = False, calibration_threshold = .05, exp_decay = 1, decay_stepsize = 1):
+def contrastive_loss(x, feature):
+    """
+    x: k by 3 by d tensor
+    """
+    distance1 = (x[:, 0, :] - x[:, 1, :]).norm(dim = 1) / (feature[:, 0, :] - feature[:, 1, :]).norm(dim = 1)
+    distance2 = (x[:, 0, :] - x[:, 2, :]).norm(dim = 1) / (feature[:, 0, :] - feature[:, 2, :]).norm(dim = 1)
+    loss = torch.abs(distance1 - distance2).mean()
+    return loss
+    
+def train_model_kernel(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20, 20], n_unif = 10, n_pairs = 100, learning_rate = 0.003, tanh = False, calibration_threshold = .05, exp_decay = 1, decay_stepsize = 1):
     N, input_size = X.shape
     gmm = GaussianMLP(inputs = input_size, hidden_layers=hidden_layers, tanh = tanh)
 
     optimizer = torch.optim.RMSprop(params=gmm.parameters(), lr=learning_rate)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=decay_stepsize, gamma=exp_decay)
     
-    # in the first half of the training epochs, train the model without the calibration loss
-    for epoch in range(int(n_epoch / 2)):
-        optimizer.zero_grad()
-        mean, var = gmm(X)
-        nllk_loss = NLLloss(Y, mean, var) #NLL loss
-        if epoch == 0:
-            print('initial loss: ',nllk_loss.item())
-        nllk_loss.backward()
-        optimizer.step()
-        scheduler.step()
-    
-    # in the second half of the training epochs, check the calibration conditions and add the calibration loss
-    for epoch in range(int(n_epoch / 2) + 1, n_epoch):
-        optimizer.zero_grad()
-        mean, var = gmm(X)
-        nllk_loss = NLLloss(Y, mean, var) #NLL loss
-        predicted_cdf = pcdf(mean.squeeze(dim = 1), var.squeeze(dim = 1), Y)
-        sd = torch.sqrt(var)
-        
-        cal_err = calibration_error(predicted_cdf.detach().numpy(), step = .1)
-        if cal_err > calibration_threshold:
-        #if True:
-            crps_loss = CRPSMetric(x = Y.squeeze(dim = 1), loc = mean.squeeze(dim = 1), scale = sd.squeeze(dim = 1)).gaussian_crps().mean()
-            print(epoch, cal_err, nllk_loss, crps_loss)
-            loss = nllk_loss + crps_loss
-        else:
-            loss = nllk_loss
-        loss.backward()
-        optimizer.step()
-        scheduler.step()
-        
-    print('final loss: ', nllk_loss.item())
-    
-    return gmm
-    
-def train_model_nllk(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20, 20], learning_rate = 0.003, tanh = False, calibration_threshold = .05, exp_decay = 1, decay_stepsize = 1):
-    N, input_size = X.shape
-    gmm = GaussianMLP(inputs = input_size, hidden_layers=hidden_layers, tanh = tanh)
-
-    optimizer = torch.optim.RMSprop(params=gmm.parameters(), lr=learning_rate)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=decay_stepsize, gamma=exp_decay)
-    
-    # in the first half of the training epochs, train the model without the calibration loss
     for epoch in range(n_epoch):
         optimizer.zero_grad()
-        mean, var = gmm(X)
+        mean, var, feature = gmm(X)
         nllk_loss = NLLloss(Y, mean, var) #NLL loss
-        if epoch == 0:
-            print('initial loss: ',nllk_loss.item())
-        nllk_loss.backward()
-        optimizer.step()
-        scheduler.step()
         
-    print('final loss: ', nllk_loss.item())
-    
-    return gmm
-
-def train_model_crps(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20, 20], learning_rate = 0.003, tanh = False, calibration_threshold = .05, exp_decay = 1, decay_stepsize = 1):
-    N, input_size = X.shape
-    gmm = GaussianMLP(inputs = input_size, hidden_layers=hidden_layers, tanh = tanh)
-
-    optimizer = torch.optim.RMSprop(params=gmm.parameters(), lr=learning_rate)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=decay_stepsize, gamma=exp_decay)
-    
-    # in the first half of the training epochs, train the model without the calibration loss
-    for epoch in range(n_epoch):
-        optimizer.zero_grad()
-        mean, var = gmm(X)
-        sd = torch.sqrt(var)
-        crps_loss = CRPSMetric(x = Y.squeeze(dim = 1), loc = mean.squeeze(dim = 1), scale = sd.squeeze(dim = 1)).gaussian_crps().mean()
-        if epoch == 0:
-            print('initial loss: ',crps_loss.item())
-        crps_loss.backward()
-        optimizer.step()
-        scheduler.step()
-        
-    print('final loss: ', crps_loss.item())
-    
-    return gmm
-
-def train_model_calibration(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20, 20], n_unif = 50, learning_rate = 0.003, tanh = False, calibration_threshold = .05, exp_decay = 1, decay_stepsize = 1):
-    N, input_size = X.shape
-    gmm = GaussianMLP(inputs = input_size, hidden_layers=hidden_layers, tanh = tanh)
-
-    optimizer = torch.optim.RMSprop(params=gmm.parameters(), lr=learning_rate)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=decay_stepsize, gamma=exp_decay)
-    
-    # in the first half of the training epochs, train the model without the calibration loss
-    for epoch in range(n_epoch):
-        optimizer.zero_grad()
-        mean, var = gmm(X)
-        nllk_loss = NLLloss(Y, mean, var) #NLL loss
         predicted_cdf = pcdf(mean.squeeze(dim = 1), var.squeeze(dim = 1), Y)
         p = torch.FloatTensor(n_unif).uniform_(0, 1)
-        cal_loss = calibration_loss(Y.squeeze(dim = 1), p, mean.squeeze(dim = 1), var.squeeze(dim = 1))
-        loss = 5 * cal_loss + nllk_loss
+        cal_loss = calibration_loss(Y.squeeze(dim = 1), p, mean.squeeze(dim = 1), var.squeeze(dim = 1)) # calibration loss
+        
+        index = [random.sample(range(N), 3) for _ in range(n_pairs)]
+        kernel_loss = contrastive_loss(X[index, :], feature[index, :])
+        
+        loss = nllk_loss + 3 * kernel_loss
         if epoch == 0:
             print('initial loss: ',loss.item())
-        print('cal loss: ', cal_loss.item(), 'cal error:', calibration_error(predicted_cdf.detach().numpy()), 'nllk loss: ', nllk_loss)
+        print('cal loss: ', cal_loss.item(), 'cal error:', calibration_error(predicted_cdf.detach().numpy()), 'nllk loss: ', nllk_loss, 'kernel loss:', kernel_loss)
         loss.backward()
         optimizer.step()
         scheduler.step()
