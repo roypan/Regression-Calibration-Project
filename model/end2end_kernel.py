@@ -170,15 +170,31 @@ def calibration_loss(y, p, mean_pred, var_pred):
             loss += 1/m * torch.mean((pq - y) ** 2 * (y < pq))
     return loss
     
-def contrastive_loss(x, feature):
+def contrastive_loss_proportional(x, feature):
     """
     x: k by 3 by d tensor
     """
     distance1 = (x[:, 0, :] - x[:, 1, :]).norm(dim = 1) / (feature[:, 0, :] - feature[:, 1, :]).norm(dim = 1)
     distance2 = (x[:, 0, :] - x[:, 2, :]).norm(dim = 1) / (feature[:, 0, :] - feature[:, 2, :]).norm(dim = 1)
-    loss = torch.abs(distance1 - distance2).mean()
+    loss = (torch.abs(distance1 - distance2) ** 2).mean()
     return loss
-    
+
+def contrastive_loss(x, feature):
+    """
+    x: k by 3 by d tensor
+    """
+    loss = 0
+    distance_x01 = (x[:, 0, :] - x[:, 1, :]).norm(dim = 1)
+    distance_x02 = (x[:, 0, :] - x[:, 2, :]).norm(dim = 1)
+    distance_x12 = (x[:, 1, :] - x[:, 2, :]).norm(dim = 1)
+    distance_f01 = (feature[:, 0, :] - feature[:, 1, :]).norm(dim = 1)
+    distance_f02 = (feature[:, 0, :] - feature[:, 2, :]).norm(dim = 1)
+    distance_f12 = (feature[:, 1, :] - feature[:, 2, :]).norm(dim = 1)
+    loss += torch.sum(((distance_x01 - distance_x02) * (distance_f01 - distance_f02) < 0) * torch.abs(distance_f01 - distance_f02))
+    loss += torch.sum(((distance_x01 - distance_x12) * (distance_f01 - distance_f12) < 0) * torch.abs(distance_f01 - distance_f12))
+    loss += torch.sum(((distance_x12 - distance_x02) * (distance_f12 - distance_f02) < 0) * torch.abs(distance_f12 - distance_f02))
+    return loss
+
 def train_model_kernel(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20, 20], n_unif = 10, n_pairs = 100, learning_rate = 0.003, tanh = False, calibration_threshold = .05, exp_decay = 1, decay_stepsize = 1):
     N, input_size = X.shape
     gmm = GaussianMLP(inputs = input_size, hidden_layers=hidden_layers, tanh = tanh)
@@ -191,17 +207,17 @@ def train_model_kernel(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20
         mean, var, feature = gmm(X)
         nllk_loss = NLLloss(Y, mean, var) #NLL loss
         
-        predicted_cdf = pcdf(mean.squeeze(dim = 1), var.squeeze(dim = 1), Y)
-        p = torch.FloatTensor(n_unif).uniform_(0, 1)
-        cal_loss = calibration_loss(Y.squeeze(dim = 1), p, mean.squeeze(dim = 1), var.squeeze(dim = 1)) # calibration loss
+        #predicted_cdf = pcdf(mean.squeeze(dim = 1), var.squeeze(dim = 1), Y)
+        #p = torch.FloatTensor(n_unif).uniform_(0, 1)
+        #cal_loss = calibration_loss(Y.squeeze(dim = 1), p, mean.squeeze(dim = 1), var.squeeze(dim = 1)) # calibration loss
         
         index = [random.sample(range(N), 3) for _ in range(n_pairs)]
         kernel_loss = contrastive_loss(X[index, :], feature[index, :])
         
-        loss = nllk_loss + 3 * kernel_loss
+        loss = nllk_loss + 0.25 * kernel_loss
         if epoch == 0:
             print('initial loss: ',loss.item())
-        print('cal loss: ', cal_loss.item(), 'cal error:', calibration_error(predicted_cdf.detach().numpy()), 'nllk loss: ', nllk_loss, 'kernel loss:', kernel_loss)
+        #print('cal loss: ', cal_loss.item(), 'cal error:', calibration_error(predicted_cdf.detach().numpy()), 'nllk loss: ', nllk_loss, 'kernel loss:', kernel_loss)
         loss.backward()
         optimizer.step()
         scheduler.step()
