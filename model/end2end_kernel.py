@@ -179,7 +179,7 @@ def contrastive_loss_proportional(x, feature):
     loss = (torch.abs(distance1 - distance2) ** 2).mean()
     return loss
 
-def contrastive_loss(x, feature):
+def contrastive_loss_comparison(x, feature):
     """
     x: k by 3 by d tensor
     """
@@ -193,6 +193,18 @@ def contrastive_loss(x, feature):
     loss += torch.sum(((distance_x01 - distance_x02) * (distance_f01 - distance_f02) < 0) * torch.abs(distance_f01 - distance_f02))
     loss += torch.sum(((distance_x01 - distance_x12) * (distance_f01 - distance_f12) < 0) * torch.abs(distance_f01 - distance_f12))
     loss += torch.sum(((distance_x12 - distance_x02) * (distance_f12 - distance_f02) < 0) * torch.abs(distance_f12 - distance_f02))
+    return loss
+    
+def contrastive_loss(x, feature):
+    """
+    x: k by 3 by d tensor
+    """
+    m = nn.ReLU()
+    distance_x01 = (x[:, 0, :] - x[:, 1, :]).norm(dim = 1)
+    distance_x02 = (x[:, 0, :] - x[:, 2, :]).norm(dim = 1)
+    distance_f01 = (feature[:, 0, :] - feature[:, 1, :]).norm(dim = 1)
+    distance_f02 = (feature[:, 0, :] - feature[:, 2, :]).norm(dim = 1)
+    loss = torch.sum((distance_x01 - distance_x02 < 0) * m(distance_f01 - distance_f02)) + torch.sum((distance_x02 - distance_x01 < 0) * m(distance_f02 - distance_f01))
     return loss
 
 def train_model_kernel(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20, 20], n_unif = 10, n_pairs = 100, learning_rate = 0.003, tanh = False, calibration_threshold = .05, exp_decay = 1, decay_stepsize = 1):
@@ -214,14 +226,15 @@ def train_model_kernel(X, Y, n_epoch = 1000, num_models = 5, hidden_layers = [20
         index = [random.sample(range(N), 3) for _ in range(n_pairs)]
         kernel_loss = contrastive_loss(X[index, :], feature[index, :])
         
-        loss = nllk_loss + 0.25 * kernel_loss
+        loss = nllk_loss + 3 * kernel_loss
         if epoch == 0:
             print('initial loss: ',loss.item())
+        print('nllk loss: ', nllk_loss, 'kernel loss:', kernel_loss)
         #print('cal loss: ', cal_loss.item(), 'cal error:', calibration_error(predicted_cdf.detach().numpy()), 'nllk loss: ', nllk_loss, 'kernel loss:', kernel_loss)
         loss.backward()
         optimizer.step()
         scheduler.step()
         
-    print('final loss: ', loss.item())
+    print('final loss: ', nllk_loss.item())
     
     return gmm
